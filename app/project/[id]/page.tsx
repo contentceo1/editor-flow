@@ -9,6 +9,7 @@ import {
 import { Project, Task, DailyTask, RevisionRound, TeamMember, STAGES, STAGE_ORDER } from "@/lib/types";
 import { RetainerAdmin } from "@/app/components/RetainerAdmin";
 import { getProject, updateProject, deleteProject, getTeam } from "@/lib/store";
+import { supabase } from "@/lib/supabase";
 import { DailyTasks } from "@/app/components/DailyTasks";
 import { RevisionRounds } from "@/app/components/RevisionRounds";
 import Link from "next/link";
@@ -30,55 +31,73 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [team, setTeam] = useState<TeamMember[]>([]);
 
   useEffect(() => {
-    setTeam(getTeam());
-    params.then(({ id }) => {
+    let projectId = "";
+
+    const load = async () => {
+      setTeam(await getTeam());
+      const { id } = await params;
+      projectId = id;
       setId(id);
-      const p = getProject(id);
+      const p = await getProject(id);
       if (p) { setProject(p); setNotes(p.notes); }
-    });
+    };
+    load();
+
+    // Real-time: update project detail when client makes changes
+    const channel = supabase
+      .channel("project-detail")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "projects" }, async (payload) => {
+        if (payload.new.id === projectId) {
+          const p = await getProject(projectId);
+          if (p) setProject(p);
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [params]);
 
-  function refresh() {
-    const p = getProject(id);
+  async function refresh() {
+    const p = await getProject(id);
     if (p) setProject(p);
   }
 
-  function setStage(stage: string) {
-    updateProject(id, { stage: stage as any });
-    refresh();
+  async function setStage(stage: string) {
+    const updated = await updateProject(id, { stage: stage as any });
+    if (updated) setProject(updated);
   }
 
-  function toggleInvoicePaid() {
+  async function toggleInvoicePaid() {
     if (!project) return;
-    updateProject(id, { invoicePaid: !project.invoicePaid });
-    refresh();
+    const updated = await updateProject(id, { invoicePaid: !project.invoicePaid });
+    if (updated) setProject(updated);
   }
 
-  function addTask() {
+  async function addTask() {
     if (!newTask.trim() || !project) return;
     const task: Task = { id: nanoid(), title: newTask.trim(), completed: false };
-    updateProject(id, { tasks: [...project.tasks, task] });
+    const updated = await updateProject(id, { tasks: [...project.tasks, task] });
     setNewTask("");
-    refresh();
+    if (updated) setProject(updated);
   }
 
-  function toggleTask(taskId: string) {
+  async function toggleTask(taskId: string) {
     if (!project) return;
     const tasks = project.tasks.map((t) => t.id === taskId ? { ...t, completed: !t.completed } : t);
-    updateProject(id, { tasks });
-    refresh();
+    const updated = await updateProject(id, { tasks });
+    if (updated) setProject(updated);
   }
 
-  function deleteTask(taskId: string) {
+  async function deleteTask(taskId: string) {
     if (!project) return;
-    updateProject(id, { tasks: project.tasks.filter((t) => t.id !== taskId) });
-    refresh();
+    const updated = await updateProject(id, { tasks: project.tasks.filter((t) => t.id !== taskId) });
+    if (updated) setProject(updated);
   }
 
-  function saveNotes() {
-    updateProject(id, { notes });
+  async function saveNotes() {
+    const updated = await updateProject(id, { notes });
     setEditingNotes(false);
-    refresh();
+    if (updated) setProject(updated);
   }
 
   function copyClientLink() {
@@ -139,7 +158,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           {project.projectType === "retainer" && (
             <RetainerAdmin
               project={project}
-              onChange={(updates) => { updateProject(id, updates); refresh(); }}
+              onChange={async (updates) => { const u = await updateProject(id, updates); if (u) setProject(u); }}
             />
           )}
 
@@ -312,18 +331,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           {/* Daily Tasks */}
           <DailyTasks
             tasks={project.dailyTasks || []}
-            onChange={(dailyTasks) => {
-              updateProject(id, { dailyTasks });
-              refresh();
+            onChange={async (dailyTasks) => {
+              const u = await updateProject(id, { dailyTasks });
+              if (u) setProject(u);
             }}
           />
 
           {/* Revision Rounds */}
           <RevisionRounds
             rounds={project.revisionRounds || []}
-            onChange={(revisionRounds) => {
-              updateProject(id, { revisionRounds });
-              refresh();
+            onChange={async (revisionRounds) => {
+              const u = await updateProject(id, { revisionRounds });
+              if (u) setProject(u);
             }}
           />
           </>}
@@ -362,7 +381,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <input
               type="date"
               value={project.deliveryDate || ""}
-              onChange={(e) => { updateProject(id, { deliveryDate: e.target.value }); refresh(); }}
+              onChange={async (e) => { const u = await updateProject(id, { deliveryDate: e.target.value }); if (u) setProject(u); }}
               className="w-full px-4 py-2.5 rounded-xl border text-sm outline-none"
               style={{ background: "var(--background)", borderColor: "var(--card-border)", color: "var(--foreground)" }}
               onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
@@ -429,9 +448,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 return (
                   <button
                     key={member.id}
-                    onClick={() => {
-                      updateProject(id, { assignedEditorId: isAssigned ? undefined : member.id });
-                      refresh();
+                    onClick={async () => {
+                      const u = await updateProject(id, { assignedEditorId: isAssigned ? undefined : member.id });
+                      if (u) setProject(u);
                     }}
                     className="flex items-center gap-3 p-3 rounded-xl border text-left transition-all"
                     style={isAssigned

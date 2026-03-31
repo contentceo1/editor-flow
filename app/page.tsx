@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Video, DollarSign, Clock, CheckCircle, Users, Copy, ExternalLink, Trash2, UserPlus, X } from "lucide-react";
 import { Project, TeamMember, STAGES, STAGE_ORDER, ProjectType } from "@/lib/types";
 import { getProjects, createProject, updateProject, deleteProject, getTeam, addTeamMember, removeTeamMember } from "@/lib/store";
+import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 
 function stageIndex(stage: string) {
@@ -76,20 +77,18 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
   const [projectType, setProjectType] = useState<ProjectType>("one_time");
   const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const p = createProject({
+    const p = await createProject({
       clientName: form.clientName,
       clientEmail: form.clientEmail,
       projectTitle: form.projectTitle,
       invoiceAmount: parseFloat(form.invoiceAmount) || 0,
       projectType,
     });
-    setTimeout(() => {
-      onCreate(p);
-      onClose();
-    }, 400);
+    onCreate(p);
+    onClose();
   }
 
   return (
@@ -185,33 +184,49 @@ export default function Dashboard() {
   const [editorFilter, setEditorFilter] = useState<string>("all");
 
   useEffect(() => {
-    setProjects(getProjects());
-    setTeam(getTeam());
+    const load = async () => {
+      setProjects(await getProjects());
+      setTeam(await getTeam());
+    };
+    load();
+
+    // Real-time: refresh dashboard whenever any project changes
+    const channel = supabase
+      .channel("dashboard-projects")
+      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, async () => {
+        setProjects(await getProjects());
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "team_members" }, async () => {
+        setTeam(await getTeam());
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
-  function refresh() {
-    setProjects(getProjects());
-    setTeam(getTeam());
+  async function refresh() {
+    setProjects(await getProjects());
+    setTeam(await getTeam());
   }
 
-  function handleAddMember() {
+  async function handleAddMember() {
     if (!newMemberName.trim()) return;
-    addTeamMember({ name: newMemberName.trim(), role: newMemberRole.trim() || "Editor" });
+    await addTeamMember({ name: newMemberName.trim(), role: newMemberRole.trim() || "Editor" });
     setNewMemberName("");
     setNewMemberRole("");
     setShowAddMember(false);
-    refresh();
+    await refresh();
   }
 
-  function handleRemoveMember(id: string) {
-    removeTeamMember(id);
-    refresh();
+  async function handleRemoveMember(id: string) {
+    await removeTeamMember(id);
+    await refresh();
   }
 
-  function handleDelete(id: string) {
+  async function handleDelete(id: string) {
     if (confirm("Delete this project?")) {
-      deleteProject(id);
-      refresh();
+      await deleteProject(id);
+      await refresh();
     }
   }
 
@@ -537,8 +552,8 @@ export default function Dashboard() {
         {showNew && (
           <NewProjectModal
             onClose={() => setShowNew(false)}
-            onCreate={(p) => {
-              setProjects(getProjects());
+            onCreate={async () => {
+              setProjects(await getProjects());
             }}
           />
         )}
